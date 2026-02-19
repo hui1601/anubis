@@ -85,7 +85,9 @@ jobs:
 
       - name: Install dependencies
         if: steps.target.outputs.skip == 'false'
-        run: npm ci
+        run: |
+          npm ci
+          npm install -g esbuild
 
       - name: Build assets
         if: steps.target.outputs.skip == 'false'

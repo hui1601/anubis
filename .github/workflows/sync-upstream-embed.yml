@@ -115,7 +115,7 @@ jobs:
         if: steps.target.outputs.skip == 'false'
         run: |
           git add -A
-          git commit -m "build: include pre-built assets for Go module compatibility (${{ steps.target.outputs.upstream_tag }})"
+          git commit -s -m "build: include pre-built assets for Go module compatibility (${{ steps.target.outputs.upstream_tag }})"
           git tag "${{ steps.target.outputs.embed_tag }}"
           git push origin "refs/tags/${{ steps.target.outputs.embed_tag }}"
 

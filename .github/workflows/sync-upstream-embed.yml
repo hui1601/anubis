@@ -87,7 +87,7 @@ jobs:
         if: steps.target.outputs.skip == 'false'
         run: |
           npm ci
-          npm install -g esbuild
+          npm install -g esbuild postcss-cli postcss
 
       - name: Build assets
         if: steps.target.outputs.skip == 'false'

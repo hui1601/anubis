@@ -1,0 +1,131 @@
+name: Sync Upstream & Build Embed Assets
+
+on:
+  schedule:
+    # Check for new upstream tags every 6 hours
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: "Upstream tag to sync (leave empty for latest)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/TecharoHQ/anubis.git || true
+          git fetch upstream --tags --force
+
+      - name: Determine target tag
+        id: target
+        run: |
+          if [ -n "${{ inputs.upstream_tag }}" ]; then
+            TAG="${{ inputs.upstream_tag }}"
+          else
+            # Get latest semver tag from upstream (ignore pre-release tags)
+            TAG=$(git tag -l 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+          fi
+
+          if [ -z "$TAG" ]; then
+            echo "No upstream tags found"
+            exit 1
+          fi
+
+          EMBED_TAG="${TAG}-embed"
+          echo "upstream_tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "embed_tag=${EMBED_TAG}" >> "$GITHUB_OUTPUT"
+
+          # Check if embed tag already exists
+          if git rev-parse "refs/tags/${EMBED_TAG}" >/dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::${EMBED_TAG} already exists, skipping"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Will create ${EMBED_TAG} from ${TAG}"
+          fi
+
+      - name: Stop if already synced
+        if: steps.target.outputs.skip == 'true'
+        run: echo "Already up to date" && exit 0
+
+      - name: Checkout upstream tag
+        if: steps.target.outputs.skip == 'false'
+        run: |
+          git checkout "tags/${{ steps.target.outputs.upstream_tag }}" -b "embed/${{ steps.target.outputs.upstream_tag }}"
+
+      - name: Setup Go
+        if: steps.target.outputs.skip == 'false'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Setup Node.js
+        if: steps.target.outputs.skip == 'false'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+          cache: "npm"
+
+      - name: Install dependencies
+        if: steps.target.outputs.skip == 'false'
+        run: npm ci
+
+      - name: Build assets
+        if: steps.target.outputs.skip == 'false'
+        run: |
+          go generate ./...
+          ./web/build.sh
+          ./xess/build.sh
+
+      - name: Remove .gitignore entries blocking embed assets
+        if: steps.target.outputs.skip == 'false'
+        run: |
+          # Root .gitignore: remove locale json ignore
+          sed -i '/^web\/static\/locales\/\*\.json$/d' .gitignore
+
+          # web/static/js/.gitignore: remove wildcard that blocks built JS
+          rm -f web/static/js/.gitignore
+
+          # lib/challenge/preact/static/.gitignore: remove app.js ignore
+          rm -f lib/challenge/preact/static/.gitignore
+
+          # xess/.gitignore: remove xess.min.css ignore
+          sed -i 's/^xess\.min\.css$//' xess/.gitignore
+
+      - name: Commit and tag
+        if: steps.target.outputs.skip == 'false'
+        run: |
+          git add -A
+          git commit -m "build: include pre-built assets for Go module compatibility (${{ steps.target.outputs.upstream_tag }})"
+          git tag "${{ steps.target.outputs.embed_tag }}"
+          git push origin "refs/tags/${{ steps.target.outputs.embed_tag }}"
+
+      - name: Notify caddy-anubis (repository_dispatch)
+        if: steps.target.outputs.skip == 'false'
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.CADDY_ANUBIS_PAT }}
+          repository: hui1601/caddy-anubis
+          event-type: anubis-embed-updated
+          client-payload: |
+            {
+              "upstream_tag": "${{ steps.target.outputs.upstream_tag }}",
+              "embed_tag": "${{ steps.target.outputs.embed_tag }}"
+            }
